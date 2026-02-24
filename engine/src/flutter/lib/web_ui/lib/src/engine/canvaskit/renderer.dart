@@ -32,19 +32,20 @@ class CanvasKitRenderer extends Renderer {
 
   static Rasterizer _createRasterizer() {
     if (configuration.canvasKitForceMultiSurfaceRasterizer || isSafari || isFirefox) {
-      return MultiSurfaceRasterizer();
+      return MultiSurfaceRasterizer(
+        (OnscreenCanvasProvider canvasProvider) => CkOnscreenSurface(canvasProvider),
+      );
     }
-    return OffscreenCanvasRasterizer();
+    return OffscreenCanvasRasterizer(
+      (OffscreenCanvasProvider canvasProvider) => CkOffscreenSurface(canvasProvider),
+    );
   }
 
   @override
   void debugResetRasterizer() {
     rasterizer = _createRasterizer();
+    _pictureToImageSurface = rasterizer.createPictureToImageSurface() as CkSurface;
   }
-
-  /// A surface used specifically for `Picture.toImage` when software rendering
-  /// is supported.
-  final Surface pictureToImageSurface = Surface();
 
   @override
   Future<void> initialize() async {
@@ -59,6 +60,7 @@ class CanvasKitRenderer extends Renderer {
         windowFlutterCanvasKit = canvasKit;
       }
       rasterizer = _createRasterizer();
+      _pictureToImageSurface = rasterizer.createPictureToImageSurface() as CkSurface;
       _instance = this;
       await super.initialize();
     }();
@@ -156,7 +158,12 @@ class CanvasKitRenderer extends Renderer {
     double sigmaX = 0.0,
     double sigmaY = 0.0,
     ui.TileMode? tileMode,
-  }) => CkImageFilter.blur(sigmaX: sigmaX, sigmaY: sigmaY, tileMode: tileMode);
+    ui.Rect? bounds,
+  }) =>
+      // TODO(dkwingsmt): `bounds` is currently not implemented in CanvasKit.
+      // Fall back to unbounded blur.
+      // https://github.com/flutter/flutter/issues/175899
+      CkImageFilter.blur(sigmaX: sigmaX, sigmaY: sigmaY, tileMode: tileMode);
 
   @override
   ui.ImageFilter createDilateImageFilter({double radiusX = 0.0, double radiusY = 0.0}) =>
@@ -312,7 +319,29 @@ class CanvasKitRenderer extends Renderer {
     List<ui.FontFeature>? fontFeatures,
     List<ui.FontVariation>? fontVariations,
   }) => isExperimentalWebParagraph
-      ? WebTextStyle(fontFamily: fontFamily, fontSize: fontSize, color: color)
+      ? WebTextStyle(
+          color: color,
+          decoration: decoration,
+          decorationColor: decorationColor,
+          decorationStyle: decorationStyle,
+          decorationThickness: decorationThickness,
+          fontWeight: fontWeight,
+          fontStyle: fontStyle,
+          textBaseline: textBaseline,
+          fontFamily: fontFamily,
+          fontFamilyFallback: fontFamilyFallback,
+          fontSize: fontSize,
+          letterSpacing: letterSpacing,
+          wordSpacing: wordSpacing,
+          height: height,
+          leadingDistribution: leadingDistribution,
+          locale: locale,
+          background: background as CkPaint?,
+          foreground: foreground as CkPaint?,
+          shadows: shadows,
+          fontFeatures: fontFeatures,
+          fontVariations: fontVariations,
+        )
       : CkTextStyle(
           color: color,
           decoration: decoration,
@@ -353,10 +382,18 @@ class CanvasKitRenderer extends Renderer {
     ui.Locale? locale,
   }) => isExperimentalWebParagraph
       ? WebParagraphStyle(
-          textDirection: textDirection,
           textAlign: textAlign,
+          textDirection: textDirection,
+          maxLines: maxLines,
           fontFamily: fontFamily,
           fontSize: fontSize,
+          height: height,
+          textHeightBehavior: textHeightBehavior,
+          fontWeight: fontWeight,
+          fontStyle: fontStyle,
+          strutStyle: strutStyle as WebStrutStyle?,
+          ellipsis: ellipsis,
+          locale: locale,
         )
       : CkParagraphStyle(
           textAlign: textAlign,
@@ -385,7 +422,17 @@ class CanvasKitRenderer extends Renderer {
     ui.FontStyle? fontStyle,
     bool? forceStrutHeight,
   }) => isExperimentalWebParagraph
-      ? WebStrutStyle()
+      ? WebStrutStyle(
+          fontFamily: fontFamily,
+          fontFamilyFallback: fontFamilyFallback,
+          fontSize: fontSize,
+          height: height,
+          leadingDistribution: leadingDistribution,
+          leading: leading,
+          fontWeight: fontWeight,
+          fontStyle: fontStyle,
+          forceStrutHeight: forceStrutHeight,
+        )
       : CkStrutStyle(
           fontFamily: fontFamily,
           fontFamilyFallback: fontFamilyFallback,
@@ -445,8 +492,8 @@ class CanvasKitRenderer extends Renderer {
 
   @override
   void dumpDebugInfo() {
-    int i = 0;
-    for (final viewRasterizer in rasterizers.values) {
+    var i = 0;
+    for (final ViewRasterizer viewRasterizer in rasterizers.values) {
       final Map<String, dynamic>? debugJson = viewRasterizer.dumpDebugInfo();
       if (debugJson != null) {
         downloadDebugInfo('flutter-scene$i', debugJson);
@@ -454,4 +501,9 @@ class CanvasKitRenderer extends Renderer {
       }
     }
   }
+
+  late CkSurface _pictureToImageSurface;
+
+  @override
+  CkSurface get pictureToImageSurface => _pictureToImageSurface;
 }

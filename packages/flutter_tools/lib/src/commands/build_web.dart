@@ -31,6 +31,7 @@ class BuildWebCommand extends BuildSubCommand {
     usesBuildNameOption();
     addBuildModeFlags(verboseHelp: verboseHelp);
     usesDartDefineOption();
+    usesWebDefineOption();
     addEnableExperimentation(hide: !verboseHelp);
     addNativeNullAssertions();
 
@@ -55,8 +56,10 @@ class BuildWebCommand extends BuildSubCommand {
     );
     argParser.addOption(
       'pwa-strategy',
-      defaultsTo: ServiceWorkerStrategy.offlineFirst.cliName,
-      help: 'The caching strategy to be used by the PWA service worker.',
+      hide: true,
+      help:
+          'This option is deprecated and will be removed in a future Flutter release.\n'
+          'The caching strategy to be used by the PWA service worker.',
       allowed: ServiceWorkerStrategy.values.map((ServiceWorkerStrategy e) => e.cliName),
       allowedHelp: CliEnum.allowedHelp(ServiceWorkerStrategy.values),
     );
@@ -285,6 +288,7 @@ class BuildWebCommand extends BuildSubCommand {
     // valid approaches for setting output directory of build artifacts
     final String? outputDirectoryPath = stringArg('output');
 
+    final Map<String, String> webDefines = extractWebDefines();
     final webBuilder = WebBuilder(
       logger: globals.logger,
       processManager: globals.processManager,
@@ -302,6 +306,7 @@ class BuildWebCommand extends BuildSubCommand {
       baseHref: baseHref,
       staticAssetsUrl: staticAssetsUrl,
       outputDirectoryPath: outputDirectoryPath,
+      webDefines: webDefines,
     );
     return FlutterCommandResult.success();
   }

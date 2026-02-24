@@ -207,6 +207,16 @@ List<String> buildModeOptions(BuildMode mode, List<String> dartDefines) => switc
   _ => throw Exception('Unknown BuildMode: $mode'),
 };
 
+final _extraFrontEndOptionsFilterSet = <String>{
+  // Don't allow for users to pass --include-unsupported-platform-library-stubs to bypass
+  // unsupported library compile time errors as this flag is only safe for use by developer
+  // tooling.
+  '--include-unsupported-platform-library-stubs',
+};
+
+Iterable<String>? _filterExtraFrontEndOptions(List<String>? options) =>
+    options?.where((e) => !_extraFrontEndOptionsFilterSet.contains(e));
+
 /// A compiler interface for producing single (non-incremental) kernel files.
 class KernelCompiler {
   KernelCompiler({
@@ -371,7 +381,7 @@ class KernelCompiler {
           if (nativeAssets != null) ...<String>['--native-assets', nativeAssets],
           // See: https://github.com/flutter/flutter/issues/103994
           '--verbosity=error',
-          ...?extraFrontEndOptions,
+          ...?_filterExtraFrontEndOptions(extraFrontEndOptions),
           mainUri ?? '--native-assets-only',
         ];
 
@@ -462,6 +472,7 @@ class _CompileExpressionToJsRequest extends _CompilationRequest {
   _CompileExpressionToJsRequest(
     super.completer,
     this.libraryUri,
+    this.scriptUri,
     this.line,
     this.column,
     this.jsModules,
@@ -471,6 +482,7 @@ class _CompileExpressionToJsRequest extends _CompilationRequest {
   );
 
   final String? libraryUri;
+  final String? scriptUri;
   final int line;
   final int column;
   final Map<String, String>? jsModules;
@@ -507,6 +519,7 @@ abstract class ResidentCompiler {
     required ShutdownHooks shutdownHooks,
     bool testCompilation,
     bool trackWidgetCreation,
+    bool includeUnsupportedPlatformLibraryStubs,
     String packagesPath,
     List<String> fileSystemRoots,
     String? fileSystemScheme,
@@ -589,6 +602,7 @@ abstract class ResidentCompiler {
   /// compilation result and a number of errors.
   Future<CompilerOutput?> compileExpressionToJs(
     String libraryUri,
+    String scriptUri,
     int line,
     int column,
     Map<String, String> jsModules,
@@ -628,6 +642,7 @@ class DefaultResidentCompiler implements ResidentCompiler {
     required ShutdownHooks shutdownHooks,
     this.testCompilation = false,
     this.trackWidgetCreation = true,
+    this.includeUnsupportedPlatformLibraryStubs = false,
     this.packagesPath,
     List<String> fileSystemRoots = const <String>[],
     this.fileSystemScheme,
@@ -650,7 +665,17 @@ class DefaultResidentCompiler implements ResidentCompiler {
        // This is a URI, not a file path, so the forward slash is correct even on Windows.
        sdkRoot = sdkRoot.endsWith('/') ? sdkRoot : '$sdkRoot/',
        // Make a copy, we might need to modify it later.
-       fileSystemRoots = List<String>.from(fileSystemRoots);
+       fileSystemRoots = List<String>.from(fileSystemRoots) {
+    // Currently, the only developer tooling that requires support for importing unsupported
+    // platform libraries at compile time is the widget previewer. Only developer tooling use cases
+    // should support this, so this is restricted to the widget previewer's runtime target for now.
+    if (includeUnsupportedPlatformLibraryStubs && targetModel != TargetModel.dartdevc) {
+      throw StateError(
+        'includeUnsupportedPlatformLibraryStubs should only be used by the widget-preview '
+        'command.',
+      );
+    }
+  }
 
   final Logger _logger;
   final ProcessManager _processManager;
@@ -661,6 +686,7 @@ class DefaultResidentCompiler implements ResidentCompiler {
   final bool testCompilation;
   final BuildMode buildMode;
   final bool trackWidgetCreation;
+  final bool includeUnsupportedPlatformLibraryStubs;
   final String? packagesPath;
   final TargetModel targetModel;
   final List<String> fileSystemRoots;
@@ -864,6 +890,8 @@ class DefaultResidentCompiler implements ResidentCompiler {
           if (packagesPath != null) ...<String>['--packages', packagesPath!],
           ...buildModeOptions(buildMode, dartDefines),
           if (trackWidgetCreation) '--track-widget-creation',
+          if (includeUnsupportedPlatformLibraryStubs)
+            '--include-unsupported-platform-library-stubs',
           for (final String root in fileSystemRoots) ...<String>['--filesystem-root', root],
           if (fileSystemScheme != null) ...<String>['--filesystem-scheme', fileSystemScheme!],
           if (initializeFromDill != null) ...<String>[
@@ -883,7 +911,7 @@ class DefaultResidentCompiler implements ResidentCompiler {
           if (unsafePackageSerialization) '--unsafe-package-serialization',
           // See: https://github.com/flutter/flutter/issues/103994
           '--verbosity=error',
-          ...?extraFrontEndOptions,
+          ...?_filterExtraFrontEndOptions(extraFrontEndOptions),
         ];
     _logger.printTrace(command.join(' '));
     _server = await _processManager.start(command);
@@ -995,6 +1023,7 @@ class DefaultResidentCompiler implements ResidentCompiler {
   @override
   Future<CompilerOutput?> compileExpressionToJs(
     String libraryUri,
+    String scriptUri,
     int line,
     int column,
     Map<String, String> jsModules,
@@ -1011,6 +1040,7 @@ class DefaultResidentCompiler implements ResidentCompiler {
       _CompileExpressionToJsRequest(
         completer,
         libraryUri,
+        scriptUri,
         line,
         column,
         jsModules,
@@ -1032,23 +1062,23 @@ class DefaultResidentCompiler implements ResidentCompiler {
       return null;
     }
 
-    final String inputKey = Uuid().generateV4();
     server.stdin
-      ..writeln('compile-expression-to-js $inputKey')
-      ..writeln(request.libraryUri ?? '')
-      ..writeln(request.line)
-      ..writeln(request.column);
-    request.jsModules?.forEach((String k, String v) {
-      server.stdin.writeln('$k:$v');
-    });
-    server.stdin.writeln(inputKey);
-    request.jsFrameValues?.forEach((String k, String v) {
-      server.stdin.writeln('$k:$v');
-    });
-    server.stdin
-      ..writeln(inputKey)
-      ..writeln(request.moduleName ?? '')
-      ..writeln(request.expression ?? '');
+      ..writeln('JSON_INPUT')
+      ..writeln(
+        json.encode({
+          'type': 'COMPILE_EXPRESSION_JS',
+          'data': {
+            'expression': request.expression,
+            'libraryUri': request.libraryUri,
+            'scriptUri': request.scriptUri,
+            'line': request.line,
+            'column': request.column,
+            'jsModules': request.jsModules,
+            'jsFrameValues': request.jsFrameValues,
+            'moduleName': request.moduleName,
+          },
+        }),
+      );
 
     return _stdoutHandler.compilerOutput?.future;
   }
